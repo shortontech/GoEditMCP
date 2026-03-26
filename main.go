@@ -223,6 +223,43 @@ func handleToolCall(name string, args json.RawMessage) callToolResult {
 	}
 }
 
+func resolveAndValidatePath(filePath string) (string, error) {
+	if filePath == "" {
+		return "", fmt.Errorf("file_path is required")
+	}
+
+	resolved, err := filepath.Abs(filePath)
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve path: %w", err)
+	}
+
+	// Evaluate symlinks to prevent escaping via symlink
+	resolved, err = filepath.EvalSymlinks(resolved)
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve path: %w", err)
+	}
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", fmt.Errorf("failed to get working directory: %w", err)
+	}
+
+	cwd, err = filepath.EvalSymlinks(cwd)
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve working directory: %w", err)
+	}
+
+	if !strings.HasPrefix(resolved, cwd+string(filepath.Separator)) && resolved != cwd {
+		return "", fmt.Errorf("file_path must be within the working directory (%s)", cwd)
+	}
+
+	if filepath.Ext(resolved) != ".go" {
+		return "", fmt.Errorf("only works on .go files")
+	}
+
+	return resolved, nil
+}
+
 func errorResult(msg string) callToolResult {
 	return callToolResult{
 		Content: []textContent{{Type: "text", Text: msg}},
@@ -244,15 +281,12 @@ func handleReadGo(rawArgs json.RawMessage) callToolResult {
 		return errorResult("invalid arguments: " + err.Error())
 	}
 
-	if args.FilePath == "" {
-		return errorResult("file_path is required")
+	resolved, err := resolveAndValidatePath(args.FilePath)
+	if err != nil {
+		return errorResult(err.Error())
 	}
 
-	if filepath.Ext(args.FilePath) != ".go" {
-		return errorResult("ReadGo only works on .go files")
-	}
-
-	data, err := os.ReadFile(args.FilePath)
+	data, err := os.ReadFile(resolved)
 	if err != nil {
 		return errorResult(err.Error())
 	}
@@ -291,11 +325,9 @@ func handleUpdateGo(rawArgs json.RawMessage) callToolResult {
 		return errorResult("invalid arguments: " + err.Error())
 	}
 
-	if args.FilePath == "" {
-		return errorResult("file_path is required")
-	}
-	if filepath.Ext(args.FilePath) != ".go" {
-		return errorResult("UpdateGo only works on .go files")
+	resolved, err := resolveAndValidatePath(args.FilePath)
+	if err != nil {
+		return errorResult(err.Error())
 	}
 	if args.OldString == "" {
 		return errorResult("old_string is required")
@@ -309,7 +341,7 @@ func handleUpdateGo(rawArgs json.RawMessage) callToolResult {
 		return errorResult("old_string and new_string are identical after whitespace normalization")
 	}
 
-	data, err := os.ReadFile(args.FilePath)
+	data, err := os.ReadFile(resolved)
 	if err != nil {
 		return errorResult(err.Error())
 	}
@@ -381,21 +413,21 @@ func handleUpdateGo(rawArgs json.RawMessage) callToolResult {
 	result := strings.Join(fileLines, "\n")
 
 	// Write file
-	if err := os.WriteFile(args.FilePath, []byte(result), 0644); err != nil {
+	if err := os.WriteFile(resolved, []byte(result), 0644); err != nil {
 		return errorResult("failed to write file: " + err.Error())
 	}
 
 	// Run gofmt
-	cmd := exec.Command("gofmt", "-w", args.FilePath)
+	cmd := exec.Command("gofmt", "-w", resolved)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
 		// Revert
-		os.WriteFile(args.FilePath, originalData, 0644)
+		os.WriteFile(resolved, originalData, 0644)
 		return errorResult("gofmt failed (reverted): " + stderr.String())
 	}
 
-	return successResult(fmt.Sprintf("Successfully replaced %d occurrence(s) in %s", len(matches), args.FilePath))
+	return successResult(fmt.Sprintf("Successfully replaced %d occurrence(s) in %s", len(matches), resolved))
 }
 
 func splitAndStrip(s string) []string {
