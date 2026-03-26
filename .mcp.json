@@ -1,0 +1,7 @@
+{
+  "mcpServers": {
+    "go-edit": {
+      "command": "go-edit-mcp"
+    }
+  }
+}
